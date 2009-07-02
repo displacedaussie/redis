@@ -8,22 +8,13 @@ class Redis
       @redis = redis
       @commands = []
     end
-    
-    def get_response
+   
+    def call_command(command)
+      @commands << command
     end
-    
-    def write(data)
-      @commands << data
-      write_and_read if @commands.size >= BUFFER_SIZE
-    end
-    
-    def finish
-      write_and_read
-    end
-    
-    def write_and_read
-      @redis.write @commands.join
-      @redis.read_socket
+
+    def execute
+      @redis.call_command(@commands)
       @commands.clear
     end
     

@@ -1,17 +1,10 @@
 BEFORE REDIS 1.0.0-rc1
 
- * Add number of keys for every DB in INFO
- * maxmemory support
- * Resize the expires and Sets hash tables if needed as well? For Sets the right moment to check for this is probably in SREM
- * What happens if the saving child gets killed or segfaults instead of ending normally? Handle this.
- * check 'server.dirty' everywere. Make it proprotional to the number of objects modified.
- * Shutdown must kill other background savings before to start saving. Otherwise the DB can get replaced by the child that rename(2) after the parent for some reason. Child should trap the signal and remove the temp file name.
- * Objects sharing configuration, add the directive `objectsharingpool <size>`
- * Make sure to convert all the fstat() calls to 64bit versions.
  * Cover most of the source code with test-redis.tcl
 
 AFTER 1.0 stable release
 
+ * Add a command to inspect the currently selected DB index
  * Consistent hashing implemented in all the client libraries having an user base
  * SORT: Don't copy the list into a vector when BY argument is constant.
  * SORT ... STORE keyname. Instead to return the SORTed data set it into key.
@@ -29,6 +22,8 @@ AFTER 1.0 stable release
    side the type also takes an hash table with key->score mapping, so that when
    there is an update we lookup the current score and can traverse the tree.
  * BITMAP type
+ * LRANGE 4 0 should return the same elements as LRANGE 0 4 but in reverse order (only if we get enough motivated requests about it)
+ * zmalloc() should avoid to add a private header for archs where there is some other kind of libc-specific way to get the size of a malloced block.
 
 FUTURE HINTS
 
