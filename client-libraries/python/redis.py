@@ -7,6 +7,8 @@ History:
         - 20090603 fix missing errno import, add sunion and sunionstore commands,
           generalize shebang (Jochen Kupperschmidt)
 
+        - 20090914 fix lpush/rpush semantics (Ben Eliott)
+
 """
 
 __author__ = "Ludovico Magnocavallo <ludo\x40qix\x2eit>"
@@ -288,7 +290,7 @@ class Redis(object):
         >>> r.set('a2', 'a')
         'OK'
         >>> r.keys('a*')
-        [u'a', u'a2']
+        [u'a2', u'a']
         >>> r.delete('a2')
         1
         >>> r.keys('sjdfhskjh*')
@@ -385,7 +387,7 @@ class Redis(object):
         self._write('EXPIRE %s %s\r\n' % (name, time))
         return self.get_response()
     
-    def push(self, name, value, tail=False):
+    def push(self, name, value, tail=True):
         """
         >>> r = Redis(db=9)
         >>> r.delete('l')
@@ -404,7 +406,7 @@ class Redis(object):
         self.connect()
         value = self._encode(value)
         self._write('%s %s %s\r\n%s\r\n' % (
-            'LPUSH' if tail else 'RPUSH', name, len(value), value
+            'RPUSH' if tail else 'LPUSH', name, len(value), value
         ))
         return self.get_response()
     
@@ -1007,9 +1009,12 @@ class Redis(object):
                 break
         data = ''.join(buf)[:-2]
         try:
-            return int(data) if data.find('.') == -1 else decimal.Decimal(data)
+            value = int(data) if data.find('.') == -1 else decimal.Decimal(data) 
         except (ValueError, decimal.InvalidOperation):
             return data.decode(self.charset)
+        if len(str(value)) != len(data):
+            return data.decode(self.charset)
+        return value
     
     def disconnect(self):
         if isinstance(self._sock, socket.socket):
