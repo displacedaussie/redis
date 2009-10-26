@@ -8,6 +8,8 @@ History:
           generalize shebang (Jochen Kupperschmidt)
 
         - 20090914 fix lpush/rpush semantics (Ben Eliott)
+        
+        - 20091026 implement automatic reconnections, minor refactoring (Sebastien Estienne)
 
 """
 
