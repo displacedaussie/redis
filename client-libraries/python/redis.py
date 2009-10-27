@@ -11,6 +11,8 @@ History:
         
         - 20091026 implement automatic reconnections, minor refactoring (Sebastien Estienne)
 
+        - 20091027 add a disconnect method (David Moss)
+
 """
 
 __author__ = "Ludovico Magnocavallo <ludo\x40qix\x2eit>"
@@ -293,8 +295,8 @@ class Redis(object):
         [u'a']
         >>> r.set('a2', 'a')
         'OK'
-        >>> r.keys('a*')
-        [u'a2', u'a']
+        >>> sorted(r.keys('a*'))
+        [u'a', u'a2']
         >>> r.delete('a2')
         1
         >>> r.keys('sjdfhskjh*')
@@ -870,6 +872,15 @@ class Redis(object):
             return self.send_command('BGSAVE\r\n')
         else:
             return self.send_command('SAVE\r\n')
+        
+    def shutdown(self):
+        """Close all client connections, dump database and quit the server."""
+        self.connect()
+        self._write('SHUTDOWN\r\n')
+        try:
+            return self.get_response()
+        except ConnectionError:
+            pass
         
     def lastsave(self):
         """
