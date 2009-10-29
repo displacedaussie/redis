@@ -287,7 +287,7 @@ class Redis(object):
         [u'a']
         >>> r.set('a2', 'a')
         'OK'
-        >>> r.keys('a*')
+        >>> sorted(r.keys('a*'))
         [u'a', u'a2']
         >>> r.delete('a2')
         1
@@ -625,6 +625,8 @@ class Redis(object):
         [Decimal("1.0"), Decimal("0.5"), Decimal("0.333333333333"), Decimal("0.25")]
         >>> r.sort('l', desc=True, start=2, num=1)
         [Decimal("0.333333333333")]
+        >>> r.sort('l', desc=True, start=0, num=2)
+        [Decimal("1.0"), Decimal("0.5")]
         >>> r.set('weight_0.5', 10)
         'OK'
         >>> r.sort('l', desc=True, by='weight_*')
@@ -642,7 +644,7 @@ class Redis(object):
         stmt = ['SORT', name]
         if by:
             stmt.append("BY %s" % by)
-        if start and num:
+        if (start==0 or start) and num:
             stmt.append("LIMIT %s %s" % (start, num))
         if get is None:
             pass
