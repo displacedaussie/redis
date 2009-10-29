@@ -7,6 +7,12 @@ History:
         - 20090603 fix missing errno import, add sunion and sunionstore commands,
           generalize shebang (Jochen Kupperschmidt)
 
+        - 20090914 fix lpush/rpush semantics (Ben Eliott)
+        
+        - 20091026 implement automatic reconnections, minor refactoring (Sebastien Estienne)
+
+        - 20091027 add a disconnect method (David Moss)
+
 """
 
 __author__ = "Ludovico Magnocavallo <ludo\x40qix\x2eit>"
@@ -39,7 +45,7 @@ class Redis(object):
     """The main Redis client.
     """
     
-    def __init__(self, host=None, port=None, timeout=None, db=None, nodelay=None, charset='utf8', errors='strict'):
+    def __init__(self, host=None, port=None, timeout=None, db=None, nodelay=None, charset='utf8', errors='strict', connect_retry=0):
         self.host = host or 'localhost'
         self.port = port or 6379
         if timeout:
@@ -50,6 +56,12 @@ class Redis(object):
         self._sock = None
         self._fp = None
         self.db = db
+        if connect_retry == 0:
+            self.send_command = self._send_command
+        else:
+            self.send_command = self._send_command_reconnect
+        self.connect_retry = connect_retry
+        self.connect_count = connect_retry
         
     def _encode(self, s):
         if isinstance(s, str):
@@ -61,19 +73,20 @@ class Redis(object):
                 raise InvalidData("Error encoding unicode value '%s': %s" % (value.encode(self.charset, 'replace'), e))
         return str(s)
     
-    def _write(self, s):
+    def _send_command(self, s):
         """
         >>> r = Redis(db=9)
         >>> r.connect()
         >>> r._sock.close()
         >>> try:
-        ...     r._write('pippo')
+        ...     r._send_command('pippo')
         ... except ConnectionError, e:
         ...     print e
         Error 9 while writing to socket. Bad file descriptor.
         >>>
         >>> 
         """
+        self.connect()
         try:
             self._sock.sendall(s)
         except socket.error, e:
@@ -81,7 +94,20 @@ class Redis(object):
                 # broken pipe
                 self.disconnect()
             raise ConnectionError("Error %s while writing to socket. %s." % tuple(e.args))
-            
+        return self._get_response()
+
+    def _send_command_reconnect(self, s):
+        try:
+            res = self._send_command(s)
+            self.connect_count = self.connect_retry
+            return res
+        except ConnectionError, e:
+            self.disconnect()
+            self.connect_count -= 1
+            if self.connect_count == 0:
+                raise
+            return self._send_command_reconnect(s)
+
     def _read(self):
         try:
             return self._fp.readline()
@@ -102,9 +128,7 @@ class Redis(object):
         'PONG'
         >>> 
         """
-        self.connect()
-        self._write('PING\r\n')
-        return self.get_response()
+        return self.send_command('PING\r\n')
     
     def set(self, name, value, preserve=False, getset=False):
         """
@@ -123,7 +147,6 @@ class Redis(object):
         Decimal("105.2")
         >>> 
         """
-        self.connect()
         # the following will raise an error for unicode values that can't be encoded to ascii
         # we could probably add an 'encoding' arg to init, but then what do we do with get()?
         # convert back to unicode? and what about ints, or pickled values?
@@ -131,10 +154,9 @@ class Redis(object):
         elif preserve: command = 'SETNX'
         else: command = 'SET'
         value = self._encode(value)
-        self._write('%s %s %s\r\n%s\r\n' % (
+        return self.send_command('%s %s %s\r\n%s\r\n' % (
                 command, name, len(value), value
             ))
-        return self.get_response()
     
     def get(self, name):
         """
@@ -156,9 +178,7 @@ class Redis(object):
         >>> r.get('ajhsd')
         >>> 
         """
-        self.connect()
-        self._write('GET %s\r\n' % name)
-        return self.get_response()
+        return self.send_command('GET %s\r\n' % name)
     
     def getset(self, name, value):
         """
@@ -180,9 +200,7 @@ class Redis(object):
         [u'pippo', 15, u'\\r\\naaa\\nbbb\\r\\ncccc\\nddd\\r\\n', u'\\r\\n']
         >>> 
         """
-        self.connect()
-        self._write('MGET %s\r\n' % ' '.join(args))
-        return self.get_response()
+        return self.send_command('MGET %s\r\n' % ' '.join(args))
     
     def incr(self, name, amount=1):
         """
@@ -197,12 +215,10 @@ class Redis(object):
         4
         >>>
         """
-        self.connect()
         if amount == 1:
-            self._write('INCR %s\r\n' % name)
+            return self.send_command('INCR %s\r\n' % name)
         else:
-            self._write('INCRBY %s %s\r\n' % (name, amount))
-        return self.get_response()
+            return self.send_command('INCRBY %s %s\r\n' % (name, amount))
 
     def decr(self, name, amount=1):
         """
@@ -220,12 +236,10 @@ class Redis(object):
         -7
         >>> 
         """
-        self.connect()
         if amount == 1:
-            self._write('DECR %s\r\n' % name)
+            return self.send_command('DECR %s\r\n' % name)
         else:
-            self._write('DECRBY %s %s\r\n' % (name, amount))
-        return self.get_response()
+            return self.send_command('DECRBY %s %s\r\n' % (name, amount))
     
     def exists(self, name):
         """
@@ -238,9 +252,7 @@ class Redis(object):
         1
         >>>
         """
-        self.connect()
-        self._write('EXISTS %s\r\n' % name)
-        return self.get_response()
+        return self.send_command('EXISTS %s\r\n' % name)
 
     def delete(self, name):
         """
@@ -257,9 +269,7 @@ class Redis(object):
         0
         >>> 
         """
-        self.connect()
-        self._write('DEL %s\r\n' % name)
-        return self.get_response()
+        return self.send_command('DEL %s\r\n' % name)
 
     def get_type(self, name):
         """
@@ -271,9 +281,7 @@ class Redis(object):
         >>> r.get_type('zzz')
         >>> 
         """
-        self.connect()
-        self._write('TYPE %s\r\n' % name)
-        res = self.get_response()
+        res = self.send_command('TYPE %s\r\n' % name)
         return None if res == 'none' else res
     
     def keys(self, pattern):
@@ -295,9 +303,7 @@ class Redis(object):
         []
         >>>
         """
-        self.connect()
-        self._write('KEYS %s\r\n' % pattern)
-        return self.get_response().split()
+        return self.send_command('KEYS %s\r\n' % pattern).split()
     
     def randomkey(self):
         """
@@ -309,9 +315,7 @@ class Redis(object):
         >>> 
         """
         #raise NotImplementedError("Implemented but buggy, do not use.")
-        self.connect()
-        self._write('RANDOMKEY\r\n')
-        return self.get_response()
+        return self.send_command('RANDOMKEY\r\n')
     
     def rename(self, src, dst, preserve=False):
         """
@@ -334,13 +338,10 @@ class Redis(object):
         0
         >>> 
         """
-        self.connect()
         if preserve:
-            self._write('RENAMENX %s %s\r\n' % (src, dst))
-            return self.get_response()
+            return self.send_command('RENAMENX %s %s\r\n' % (src, dst))
         else:
-            self._write('RENAME %s %s\r\n' % (src, dst))
-            return self.get_response() #.strip()
+            return self.send_command('RENAME %s %s\r\n' % (src, dst)) #.strip()
         
     def dbsize(self):
         """
@@ -349,9 +350,7 @@ class Redis(object):
         <type 'int'>
         >>> 
         """
-        self.connect()
-        self._write('DBSIZE\r\n')
-        return self.get_response()
+        return self.send_command('DBSIZE\r\n')
     
     def ttl(self, name):
         """
@@ -366,9 +365,7 @@ class Redis(object):
         0
         >>> 
         """
-        self.connect()
-        self._write('TTL %s\r\n' % name)
-        return self.get_response()
+        return self.send_command('TTL %s\r\n' % name)
     
     def expire(self, name, time):
         """
@@ -381,11 +378,9 @@ class Redis(object):
         0
         >>> 
         """
-        self.connect()
-        self._write('EXPIRE %s %s\r\n' % (name, time))
-        return self.get_response()
+        return self.send_command('EXPIRE %s %s\r\n' % (name, time))
     
-    def push(self, name, value, tail=False):
+    def push(self, name, value, tail=True):
         """
         >>> r = Redis(db=9)
         >>> r.delete('l')
@@ -401,12 +396,10 @@ class Redis(object):
         Operation against a key holding the wrong kind of value
         >>> 
         """
-        self.connect()
         value = self._encode(value)
-        self._write('%s %s %s\r\n%s\r\n' % (
-            'LPUSH' if tail else 'RPUSH', name, len(value), value
+        return self.send_command('%s %s %s\r\n%s\r\n' % (
+            'RPUSH' if tail else 'LPUSH', name, len(value), value
         ))
-        return self.get_response()
     
     def llen(self, name):
         """
@@ -423,9 +416,7 @@ class Redis(object):
         2
         >>> 
         """
-        self.connect()
-        self._write('LLEN %s\r\n' % name)
-        return self.get_response()
+        return self.send_command('LLEN %s\r\n' % name)
 
     def lrange(self, name, start, end):
         """
@@ -450,9 +441,7 @@ class Redis(object):
         [u'bbb']
         >>> 
         """
-        self.connect()
-        self._write('LRANGE %s %s %s\r\n' % (name, start, end))
-        return self.get_response()
+        return self.send_command('LRANGE %s %s %s\r\n' % (name, start, end))
         
     def ltrim(self, name, start, end):
         """
@@ -480,9 +469,7 @@ class Redis(object):
         0
         >>> 
         """
-        self.connect()
-        self._write('LTRIM %s %s %s\r\n' % (name, start, end))
-        return self.get_response()
+        return self.send_command('LTRIM %s %s %s\r\n' % (name, start, end))
     
     def lindex(self, name, index):
         """
@@ -502,9 +489,7 @@ class Redis(object):
         u'ccc'
         >>> 
         """
-        self.connect()
-        self._write('LINDEX %s %s\r\n' % (name, index))
-        return self.get_response()
+        return self.send_command('LINDEX %s %s\r\n' % (name, index))
         
     def pop(self, name, tail=False):
         """
@@ -532,9 +517,7 @@ class Redis(object):
         >>> r.pop('l')
         >>> 
         """
-        self.connect()
-        self._write('%s %s\r\n' % ('RPOP' if tail else 'LPOP', name))
-        return self.get_response()
+        return self.send_command('%s %s\r\n' % ('RPOP' if tail else 'LPOP', name))
     
     def lset(self, name, index, value):
         """
@@ -559,12 +542,10 @@ class Redis(object):
         [u'bbb']
         >>> 
         """
-        self.connect()
         value = self._encode(value)
-        self._write('LSET %s %s %s\r\n%s\r\n' % (
+        return self.send_command('LSET %s %s %s\r\n%s\r\n' % (
             name, index, len(value), value
         ))
-        return self.get_response()
     
     def lrem(self, name, value, num=0):
         """
@@ -593,12 +574,10 @@ class Redis(object):
         0
         >>> 
         """
-        self.connect()
         value = self._encode(value)
-        self._write('LREM %s %s %s\r\n%s\r\n' % (
+        return self.send_command('LREM %s %s %s\r\n%s\r\n' % (
             name, num, len(value), value
         ))
-        return self.get_response()
     
     def sort(self, name, by=None, get=None, start=None, num=None, desc=False, alpha=False):
         """
@@ -659,9 +638,7 @@ class Redis(object):
             stmt.append("DESC")
         if alpha:
             stmt.append("ALPHA")
-        self.connect()
-        self._write(' '.join(stmt + ["\r\n"]))
-        return self.get_response()
+        return self.send_command(' '.join(stmt + ["\r\n"]))
     
     def sadd(self, name, value):
         """
@@ -673,12 +650,10 @@ class Redis(object):
         1
         >>> 
         """
-        self.connect()
         value = self._encode(value)
-        self._write('SADD %s %s\r\n%s\r\n' % (
+        return self.send_command('SADD %s %s\r\n%s\r\n' % (
             name, len(value), value
         ))
-        return self.get_response()
         
     def srem(self, name, value):
         """
@@ -695,13 +670,16 @@ class Redis(object):
         0
         >>> 
         """
-        self.connect()
         value = self._encode(value)
-        self._write('SREM %s %s\r\n%s\r\n' % (
+        return self.send_command('SREM %s %s\r\n%s\r\n' % (
             name, len(value), value
         ))
-        return self.get_response()
-    
+
+    def smove(self, src, dst, name):
+        return self.send_command('SMOVE %s %s %s\r\n%s\r\n' % (
+            src, dst, len(str(name)), name
+        ))
+
     def sismember(self, name, value):
         """
         >>> r = Redis(db=9)
@@ -717,12 +695,10 @@ class Redis(object):
         1
         >>>
         """
-        self.connect()
         value = self._encode(value)
-        self._write('SISMEMBER %s %s\r\n%s\r\n' % (
+        return self.send_command('SISMEMBER %s %s\r\n%s\r\n' % (
             name, len(value), value
         ))
-        return self.get_response()
     
     def sinter(self, *args):
         """
@@ -752,9 +728,7 @@ class Redis(object):
         set([u'a'])
         >>> 
         """
-        self.connect()
-        self._write('SINTER %s\r\n' % ' '.join(args))
-        return set(self.get_response())
+        return set(self.send_command('SINTER %s\r\n' % ' '.join(args)))
     
     def sinterstore(self, dest, *args):
         """
@@ -776,9 +750,7 @@ class Redis(object):
         set([u'a'])
         >>> 
         """
-        self.connect()
-        self._write('SINTERSTORE %s %s\r\n' % (dest, ' '.join(args)))
-        return self.get_response()
+        return self.send_command('SINTERSTORE %s %s\r\n' % (dest, ' '.join(args)))
 
     def smembers(self, name):
         """
@@ -798,9 +770,7 @@ class Redis(object):
         set([u'a', u'b'])
         >>> 
         """
-        self.connect()
-        self._write('SMEMBERS %s\r\n' % name)
-        return set(self.get_response())
+        return set(self.send_command('SMEMBERS %s\r\n' % name))
 
     def sunion(self, *args):
         """
@@ -822,9 +792,7 @@ class Redis(object):
         set([u'a', u'c', u'b'])
         >>> 
         """
-        self.connect()
-        self._write('SUNION %s\r\n' % ' '.join(args))
-        return set(self.get_response())
+        return set(self.send_command('SUNION %s\r\n' % ' '.join(args)))
 
     def sunionstore(self, dest, *args):
         """
@@ -844,9 +812,7 @@ class Redis(object):
         set([u'a', u'b'])
         >>> 
         """
-        self.connect()
-        self._write('SUNIONSTORE %s %s\r\n' % (dest, ' '.join(args)))
-        return self.get_response()
+        return self.send_command('SUNIONSTORE %s %s\r\n' % (dest, ' '.join(args)))
 
     def select(self, db):
         """
@@ -862,9 +828,7 @@ class Redis(object):
         >>> r.get('a')
         >>> 
         """
-        self.connect()
-        self._write('SELECT %s\r\n' % db)
-        return self.get_response()
+        return self.send_command('SELECT %s\r\n' % db)
     
     def move(self, name, db):
         """
@@ -891,9 +855,7 @@ class Redis(object):
         'OK'
         >>> 
         """
-        self.connect()
-        self._write('MOVE %s %s\r\n' % (name, db))
-        return self.get_response()
+        return self.send_command('MOVE %s %s\r\n' % (name, db))
     
     def save(self, background=False):
         """
@@ -908,12 +870,19 @@ class Redis(object):
         ...     assert resp == 'OK'
         >>> 
         """
-        self.connect()
         if background:
-            self._write('BGSAVE\r\n')
+            return self.send_command('BGSAVE\r\n')
         else:
-            self._write('SAVE\r\n')
-        return self.get_response()
+            return self.send_command('SAVE\r\n')
+        
+    def shutdown(self):
+        """Close all client connections, dump database and quit the server."""
+        self.connect()
+        self._write('SHUTDOWN\r\n')
+        try:
+            return self.get_response()
+        except ConnectionError:
+            pass
         
     def lastsave(self):
         """
@@ -926,9 +895,7 @@ class Redis(object):
         True
         >>> 
         """
-        self.connect()
-        self._write('LASTSAVE\r\n')
-        return self.get_response()
+        return self.send_command('LASTSAVE\r\n')
     
     def flush(self, all_dbs=False):
         """
@@ -938,9 +905,7 @@ class Redis(object):
         >>> # r.flush(all_dbs=True)
         >>> 
         """
-        self.connect()
-        self._write('%s\r\n' % ('FLUSHALL' if all_dbs else 'FLUSHDB'))
-        return self.get_response()
+        return self.send_command('%s\r\n' % ('FLUSHALL' if all_dbs else 'FLUSHDB'))
     
     def info(self):
         """
@@ -952,10 +917,8 @@ class Redis(object):
         True
         >>> 
         """
-        self.connect()
-        self._write('INFO\r\n')
         info = dict()
-        for l in self.get_response().split('\r\n'):
+        for l in self.send_command('INFO\r\n').split('\r\n'):
             if not l:
                 continue
             k, v = l.split(':', 1)
@@ -963,11 +926,9 @@ class Redis(object):
         return info
     
     def auth(self, passwd):
-        self.connect()
-        self._write('AUTH %s\r\n' % passwd)
-        return self.get_response()
+        return self.send_command('AUTH %s\r\n' % passwd)
     
-    def get_response(self):
+    def _get_response(self):
         data = self._read().strip()
         if not data:
             self.disconnect()
@@ -1009,9 +970,12 @@ class Redis(object):
                 break
         data = ''.join(buf)[:-2]
         try:
-            return int(data) if data.find('.') == -1 else decimal.Decimal(data)
+            value = int(data) if data.find('.') == -1 else decimal.Decimal(data) 
         except (ValueError, decimal.InvalidOperation):
             return data.decode(self.charset)
+        if len(str(value)) != len(data):
+            return data.decode(self.charset)
+        return value
     
     def disconnect(self):
         if isinstance(self._sock, socket.socket):
