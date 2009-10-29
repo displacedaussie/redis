@@ -814,6 +814,107 @@ class Redis(object):
         """
         return self.send_command('SUNIONSTORE %s %s\r\n' % (dest, ' '.join(args)))
 
+    def zadd(self, name, score, value):
+        """
+        >>> r = Redis(db=9)
+        >>> res = r.delete('z1')
+        >>> r.zadd('z1', 1, 'z1')
+        1
+        >>> r.zadd('z1', 2, 'z2')
+        1
+        >>> r.zadd('z1', 3, 'z2')
+        0
+        """
+        value = self._encode(value)
+        return self.send_command('ZADD %s %s %s\r\n%s\r\n' % (
+            name, score, len(value), value
+        ))
+    
+    def zrem(self, name, value):
+        """
+        >>> r = Redis(db=9)
+        >>> res = r.delete('z1')
+        >>> res = r.zadd('z1', 1, 'z1')
+        >>> res = r.zadd('z1', 2, 'z2')
+        >>> r.zrem('z1', 'z2')
+        1
+        >>> r.zrem('z1', 'z3')
+        0
+        """
+        value = self._encode(value)
+        return self.send_command('ZREM %s %s\r\n%s\r\n' % (
+            name, len(value), value
+        ))
+    
+    def zrange(self, name, start, end, reverse=False):
+        """
+        >>> r = Redis(db=9)
+        >>> res = r.delete('z1')
+        >>> res = r.zadd('z1', 1, 'z1')
+        >>> res = r.zadd('z1', 2, 'z2')
+        >>> res = r.zadd('z1', 3, 'z3')
+        >>> res = r.zadd('z1', 4, 'z4')
+        >>> r.zrange('z1', 1, 2)
+        [u'z2', u'z3']
+        >>> r.zrange('z1', 2, 2)
+        [u'z3']
+        >>> r.zrange('z1', 1, 2, reverse=True)
+        [u'z3', u'z2']
+        """
+        return self.send_command('%s %s %s %s\r\n' % (
+            'ZREVRANGE' if reverse else 'ZRANGE', name, start, end
+        ))
+        
+    def zrangebyscore(self, name, min, max):
+        """
+        >>> r = Redis(db=9)
+        >>> res = r.delete('z1')
+        >>> res = r.zadd('z1', 1, 'z1')
+        >>> res = r.zadd('z1', 2, 'z2')
+        >>> res = r.zadd('z1', 3, 'z3')
+        >>> res = r.zadd('z1', 4, 'z4')
+        >>> r.zrangebyscore('z1', 1, 1)
+        [u'z1']
+        >>> r.zrangebyscore('z1', 2, 3)
+        [u'z2', u'z3']
+        """
+        return self.send_command('ZRANGEBYSCORE %s %s %s\r\n' % (
+            name, min, max
+        ))
+    
+    def zcard(self, name):
+        """
+        >>> r = Redis(db=9)
+        >>> res = r.delete('z1')
+        >>> res = r.zadd('z1', 1, 'z1')
+        >>> res = r.zadd('z1', 2, 'z2')
+        >>> r.zcard('z1')
+        2
+        >>> res = r.zadd('z1', 3, 'z3')
+        >>> r.zcard('z1')
+        3
+        """
+        return self.send_command('ZCARD %s\r\n' % (
+            name
+        ))
+
+    def zscore(self, name, element):
+        """
+        >>> r = Redis(db=9)
+        >>> res = r.delete('z1')
+        >>> res = r.zadd('z1', 2, 'z2')
+        >>> r.zscore('z1', 'z2')
+        2
+        >>> res = r.zadd('z1', 3, 'z2')
+        >>> r.zscore('z1', 'z2')
+        3
+        >>> r.zscore('z1', 'z3')
+        """
+        element = self._encode(element)
+        return self.send_command('ZSCORE %s %s\r\n%s\r\n' % (
+            name, len(element), element
+        ))
+
     def select(self, db):
         """
         >>> r = Redis(db=9)
